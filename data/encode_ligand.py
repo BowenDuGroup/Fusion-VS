@@ -35,14 +35,12 @@ logging.basicConfig(
 logger = logging.getLogger("unimol.inference")
 warnings.filterwarnings('ignore')
 
-
-# ==================== Pickle 模拟 LMDB 的 Dataset ====================
 class PickleLMDBDataset:
-    """用 pickle 文件模拟 LMDBDataset 的接口，完全不碰 lmdb"""
+    """Mock LMDBDataset interface using pickle files."""
     def __init__(self, pkl_path):
         logger.info(f"Loading PickleLMDBDataset from {pkl_path}")
         with open(pkl_path, 'rb') as f:
-            self._data = pickle.load(f)  # list of dicts
+            self._data = pickle.load(f)
         logger.info(f"Loaded {len(self._data)} entries")
 
     def __len__(self):
@@ -51,16 +49,13 @@ class PickleLMDBDataset:
     def __getitem__(self, idx):
         return self._data[idx]
 
-
 def monkey_patch_lmdb_dataset():
-    """猴子补丁：劫持 LMDBDataset，让它从 .pkl 读取而不是 .lmdb"""
+    """Monkey patch LMDBDataset to read from .pkl instead of .lmdb."""
     import unimol.data as udata
-
     _OrigLMDBDataset = udata.LMDBDataset
 
     class PatchedLMDBDataset:
         def __init__(self, data_path, *args, **kwargs):
-            # 如果对应的 .pkl 文件存在，用 pickle 读
             pkl_path = data_path.replace('.lmdb', '.pkl_data')
             if os.path.exists(pkl_path):
                 logger.info(f"[PATCHED] Loading from pickle: {pkl_path}")
@@ -84,15 +79,13 @@ def monkey_patch_lmdb_dataset():
 
     udata.LMDBDataset = PatchedLMDBDataset
 
-    # 同时补丁 tasks.drugclip 里的引用
     try:
         import unimol.tasks.drugclip as dc_module
         dc_module.LMDBDataset = PatchedLMDBDataset
     except:
         pass
 
-    logger.info("[PATCHED] LMDBDataset has been replaced with pickle-compatible version")
-
+    logger.info("[PATCHED] LMDBDataset replaced with pickle-compatible version")
 
 def get_unique_sdf_files(label_path):
     unique_sdfs = set()
@@ -104,12 +97,11 @@ def get_unique_sdf_files(label_path):
             parts = line.strip().split()
             if len(parts) >= 2:
                 unique_sdfs.add(parts[1])
-    logger.info(f"Scanned label file. Found {len(unique_sdfs)} UNIQUE absolute SDF paths.")
+    logger.info(f"Found {len(unique_sdfs)} UNIQUE absolute SDF paths.")
     return unique_sdfs
 
-
 def process_one_sdfdir(out_dir, label_path, name='mol'):
-    """解析 SDF，直接存成 pickle 列表，完全不碰 lmdb"""
+    """Parse SDF and save directly to a pickle list."""
     pkl_out_path = os.path.join(out_dir, f'{name}.pkl_data')
 
     if os.path.exists(pkl_out_path):
@@ -124,7 +116,7 @@ def process_one_sdfdir(out_dir, label_path, name='mol'):
     for sdf_file in unique_sdfs:
         if not os.path.exists(sdf_file):
             continue
-        logger.info(f"📂 正在解析: {os.path.basename(sdf_file)}")
+        logger.info(f"Parsing: {os.path.basename(sdf_file)}")
         try:
             suppl = Chem.SDMolSupplier(sdf_file, removeHs=False, sanitize=True)
             for i, mol in enumerate(tqdm(suppl, desc=f"Parsing {os.path.basename(sdf_file)}")):
@@ -149,12 +141,11 @@ def process_one_sdfdir(out_dir, label_path, name='mol'):
         logger.error("No valid SDF data processed.")
         return 1
 
-    logger.info(f"✅ 解析完成: {len(all_mols)} 个配体，保存为 pickle...")
+    logger.info(f"Parsed {len(all_mols)} ligands, saving to pickle...")
     with open(pkl_out_path, 'wb') as f:
         pickle.dump(all_mols, f, protocol=pickle.HIGHEST_PROTOCOL)
-    logger.info(f"✅ 已保存到 {pkl_out_path}")
+    logger.info(f"Saved to {pkl_out_path}")
     return 0
-
 
 def find_npy_files(out_dir, prefix, start, end):
     candidates = [
@@ -172,14 +163,13 @@ def find_npy_files(out_dir, prefix, start, end):
         return matches[0]
     return None
 
-
 def main(args):
     use_fp16 = args.fp16
     use_cuda = torch.cuda.is_available() and not args.cpu
     if use_cuda:
         torch.cuda.set_device(args.device_id)
 
-    # ===== 激活猴子补丁，让下游代码用 pickle 代替 lmdb =====
+    # Activate monkey patch to use pickle instead of lmdb
     monkey_patch_lmdb_dataset()
 
     logger.info("Loading model from {}".format(args.path))
@@ -190,7 +180,7 @@ def main(args):
 
     import torch.nn as nn
     model.mol_project = nn.Identity()
-    logger.info("Successfully bypassed `mol_project` using `nn.Identity()`.")
+    logger.info("Bypassed `mol_project` using `nn.Identity()`.")
 
     if use_fp16:
         model.half()
@@ -201,30 +191,28 @@ def main(args):
     out_dir = args.results_path if args.results_path else args.save_dir
     os.makedirs(out_dir, exist_ok=True)
 
-    # ===== 第一步：解析 SDF -> pickle（不碰 lmdb）=====
+    # Step 1: Parse SDF to pickle
     ret = process_one_sdfdir(out_dir, args.label_file)
     if ret != 0:
         logger.error("Failed to build molecule data, aborting.")
         return
 
-    # ===== 第二步：让下游以为 mol.lmdb 存在（实际读 mol.pkl_data）=====
+    # Step 2: Create dummy mol.lmdb to pass downstream checks
     lmdb_path = os.path.join(out_dir, "mol.lmdb")
     pkl_data_path = os.path.join(out_dir, "mol.pkl_data")
 
-    # 创建一个空的占位文件，让下游路径检查不报错
     if not os.path.exists(lmdb_path):
         with open(lmdb_path, 'w') as f:
-            f.write("")  # 空占位文件
+            f.write("") 
 
     logger.info("Extracting embeddings...")
-    existing_npys_before = set(glob.glob(os.path.join(out_dir, "*.npy")))
-
+    
     result = task.encode_mols_multi_folds(
         model, args.batch_size, lmdb_path, out_dir, use_cuda,
         write_npy=True, write_h5=False, start=args.start, end=args.end
     )
 
-    # ===== 第三步：收集结果 =====
+    # Step 3: Collect results
     if result is not None:
         try:
             if isinstance(result, tuple) and len(result) == 2:
@@ -232,7 +220,7 @@ def main(args):
                 pkl_path = os.path.join(out_dir, "mol_reps_512d.pkl")
                 with open(pkl_path, "wb") as f:
                     pickle.dump((mol_names, mol_reps), f)
-                logger.info(f"Successfully saved features to {pkl_path}")
+                logger.info(f"Saved features to {pkl_path}")
                 return
         except Exception as e:
             logger.warning(f"Failed to unpack return: {e}")
@@ -245,7 +233,7 @@ def main(args):
         if npy_names_path:
             mol_names = np.load(npy_names_path, allow_pickle=True)
         else:
-            # 从 pickle 重建 names
+            # Rebuild names from pickle
             logger.info("Rebuilding mol_names from pickle data...")
             with open(pkl_data_path, 'rb') as f:
                 data = pickle.load(f)
@@ -254,11 +242,9 @@ def main(args):
         pkl_path = os.path.join(out_dir, "mol_reps_512d.pkl")
         with open(pkl_path, "wb") as f:
             pickle.dump((mol_names, mol_reps), f)
-        logger.info(f"Successfully saved features to {pkl_path}")
+        logger.info(f"Saved features to {pkl_path}")
     else:
-        all_npys = glob.glob(os.path.join(out_dir, "*.npy"))
-        logger.error(f"Could not find .npy files! All in {out_dir}: {all_npys}")
-
+        logger.error(f"Could not find .npy files in {out_dir}")
 
 def cli_main():
     parser = options.get_validation_parser()

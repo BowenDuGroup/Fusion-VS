@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # ==============================================================================
-# DUD-E 数据集特征提取流水线
+# Feature extraction pipeline for DUD-E dataset
 # ==============================================================================
 
-# 1. 定义你要跑的靶点 (一定要和 processed 目录下的文件夹名字一致！)
+# 1. Define target (must match the folder name in 'processed')
 TARGET="lck"  
 
-# 2. 定义路径
+# 2. Define paths
 MODEL_WEIGHTS="/root/autodl-tmp/AI4S1/code_2/data/model_weights/6_folds/fold_0.pt"
 DICT_DIR="/root/autodl-tmp/AI4S1/dict"
 WORK_DIR="/root/autodl-tmp/AI4S1/DUD-E/processed/${TARGET}"
@@ -17,11 +17,11 @@ OUTPUT_DIR="${WORK_DIR}/features"
 mkdir -p "$OUTPUT_DIR"
 
 echo "========================================================"
-echo "🚀 开始提取 DUD-E 靶点 [$TARGET] 的特征..."
+echo "Starting feature extraction for DUD-E target [$TARGET]..."
 echo "========================================================"
 
-# --- 步骤 1：提取口袋特征 ---
-echo -e "\n[1/2] 正在提取靶点口袋特征..."
+# --- Step 1: Extract pocket features ---
+echo -e "\n[1/2] Extracting pocket features..."
 python /root/autodl-tmp/AI4S1/code_2/encode_pocket_2.py \
     --path "$MODEL_WEIGHTS" \
     --label-file "$LABEL_TXT_FILE" \
@@ -30,8 +30,8 @@ python /root/autodl-tmp/AI4S1/code_2/encode_pocket_2.py \
     --results-path "$OUTPUT_DIR" \
     "$DICT_DIR"
 
-# --- 步骤 2：提取分子库特征 (调用你发来的这份终极版代码) ---
-echo -e "\n[2/2] 正在提取配体特征 (纯内存 Pickle 模式)..."
+# --- Step 2: Extract ligand features (Pickle mode) ---
+echo -e "\n[2/2] Extracting ligand features (In-memory Pickle mode)..."
 CUDA_VISIBLE_DEVICES=0 python /root/autodl-tmp/AI4S1/code_2/encode_ligand_3.py \
     --path "$MODEL_WEIGHTS" \
     --label-file "$LABEL_TXT_FILE" \
@@ -41,5 +41,5 @@ CUDA_VISIBLE_DEVICES=0 python /root/autodl-tmp/AI4S1/code_2/encode_ligand_3.py \
     "$DICT_DIR"
 
 echo "========================================================"
-echo "🏆 DUD-E $TARGET 特征提取完毕！"
+echo "Feature extraction for DUD-E $TARGET completed!"
 echo "========================================================"

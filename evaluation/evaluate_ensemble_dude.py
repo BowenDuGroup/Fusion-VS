@@ -11,18 +11,12 @@ from sklearn.metrics import roc_auc_score
 import warnings
 warnings.filterwarnings('ignore')
 
-# ==========================================
-# 🎯 全局配置区：只需修改这里的 TARGET 即可！
-# ==========================================
-TARGET = "lck"  # <--- 修改这里：换成你想测试的 DUD-E 靶点 (如 "EGFR")
-
-# 🚀 修改点 1：路径指向 DUD-E 整理好的 processed 文件夹
+# Global Configuration
+TARGET = "lck"  
 FEAT_DIR = f"/root/autodl-tmp/AI4S1/DUD-E/processed/{TARGET}/features"
 MODEL_WEIGHTS = "/root/autodl-tmp/AI4S1/result_2/best_fusion_mlp.pth"
 
-# ==========================================
-# 1. 你的屠榜级 4096 维 Fusion MLP 架构
-# ==========================================
+# 1. 4096d Fusion MLP Architecture
 class FusionRegressor(nn.Module):
     def __init__(self, embed_dim=512, fp_dim=2048, dropout=0.0):
         super().__init__()
@@ -37,15 +31,15 @@ class FusionRegressor(nn.Module):
     def forward(self, p_embed, m_embed_3d, m_embed_2d):
         product_feat = p_embed * m_embed_3d
         diff_feat = torch.abs(p_embed - m_embed_3d)
-        # 组装 3D 特征 (512 * 4 = 2048)
+        
+        # Assemble 3D features (512 * 4 = 2048)
         feat_3d = torch.cat([p_embed, m_embed_3d, product_feat, diff_feat], dim=-1)
-        # 融合 2D 摩根指纹 (2048 + 2048 = 4096)
+        
+        # Fuse 2D Morgan fingerprints (2048 + 2048 = 4096)
         x = torch.cat([feat_3d, m_embed_2d], dim=-1)
         return self.mlp(x).squeeze(-1)
 
-# ==========================================
-# 2. 严谨的评测指标函数
-# ==========================================
+# 2. Evaluation Metrics
 def compute_ef(preds, labels, top_ratio=0.01):
     total_samples = len(labels)
     actual_actives_count = labels.sum().float()
@@ -57,39 +51,37 @@ def compute_ef(preds, labels, top_ratio=0.01):
     hits = labels[top_indices].sum().float()
     return ((hits / actual_actives_count) / top_ratio).item()
 
-# ==========================================
-# 3. 核心大考逻辑 (自动兼容单构象)
-# ==========================================
+# 3. Core Evaluation Logic
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("\n" + "="*50)
-    print(f"🔥 开始对 DUD-E 靶点 {TARGET} 进行模型盲测")
-    print(f"🖥️  使用计算设备: {device}")
+    print(f"Starting evaluation on DUD-E target {TARGET}")
+    print(f"Device: {device}")
     print("="*50)
 
-    # --- A. 加载蛋白质集合特征 ---
+    # --- A. Load pocket features ---
     pocket_pkl = f"{FEAT_DIR}/pocket_reps_512d.pkl"
     if not os.path.exists(pocket_pkl):
-        print(f"❌ 找不到口袋特征: {pocket_pkl}")
+        print(f"Pocket features not found: {pocket_pkl}")
         return
         
     with open(pocket_pkl, 'rb') as f:
         p_names, p_reps = pickle.load(f)
     pocket_reps = np.mean(p_reps, axis=1) 
-    print(f"🎯 成功加载 {len(pocket_reps)} 个构象的口袋特征 (DUD-E 通常为 1 个)。")
+    print(f"Loaded pocket features ({len(pocket_reps)} conformations).")
 
-    # --- B. 加载分子 3D 特征 ---
+    # --- B. Load ligand 3D features ---
     mol_pkl = f"{FEAT_DIR}/mol_reps_512d.pkl"
     if not os.path.exists(mol_pkl):
-        print(f"❌ 找不到配体特征: {mol_pkl}。请确保已运行特征提取脚本！")
+        print(f"Ligand features not found: {mol_pkl}")
         return
         
     with open(mol_pkl, 'rb') as f:
         m_names, m_reps = pickle.load(f)
     mol_reps_3d = np.mean(m_reps, axis=1)
     
-    # --- C. 从 pkl_data 提取 SMILES 并计算 2D 摩根指纹 ---
-    print("🧬 正在从 pkl_data 提取 SMILES 并计算 2D 摩根指纹...")
+    # --- C. Extract SMILES and compute 2D Morgan FP ---
+    print("Extracting SMILES and computing 2D Morgan FP...")
     pkl_data_path = f"{FEAT_DIR}/mol.pkl_data"
     with open(pkl_data_path, 'rb') as f:
         mol_data_list = pickle.load(f)
@@ -101,7 +93,7 @@ def main():
         name = data['mol_name']
         smi = data.get('smi', '')
         
-        # 🚀 修改点 2：严格适配 DUD-E 的 actives_final 和 decoys_final 命名
+        # Strict label matching for DUD-E (actives_final / decoys_final)
         if "decoys_final" in name:
             label = 0.0
         elif "actives_final" in name:
@@ -117,7 +109,7 @@ def main():
         
         mol_dict[name] = {"2d": mol_2d, "label": label}
 
-    # --- D. 组装数据并载入巅峰模型 ---
+    # --- D. Load model weights ---
     model = FusionRegressor(dropout=0.0).to(device)
     model.load_state_dict(torch.load(MODEL_WEIGHTS, map_location=device))
     model.eval()
@@ -125,19 +117,18 @@ def main():
     all_preds = []
     all_labels = []
 
-    print(f"⚔️ 开始对 {len(m_names)} 个分子进行打分...")
+    print(f"Scoring {len(m_names)} molecules...")
     with torch.no_grad():
         for i, m_name in enumerate(tqdm(m_names, desc="Scoring via Fusion MLP")):
-            # 容错处理：如果在字典里找不到该分子特征则跳过
+            # Skip if molecule features are missing
             if m_name not in mol_dict:
                 continue
                 
-            # 取出 3D 和 2D 特征
             m_3d = torch.tensor(mol_reps_3d[i], dtype=torch.float32).unsqueeze(0).to(device)
             m_2d = torch.tensor(mol_dict[m_name]["2d"], dtype=torch.float32).unsqueeze(0).to(device)
             label = mol_dict[m_name]["label"]
             
-            # 💡 这里完全兼容了单构象，循环只会走 1 次
+            # Compatible with single conformation
             scores_for_this_mol = []
             for p_rep in pocket_reps:
                 p_3d = torch.tensor(p_rep, dtype=torch.float32).unsqueeze(0).to(device)
@@ -149,9 +140,9 @@ def main():
             all_preds.append(final_max_score)
             all_labels.append(label)
 
-    # --- E. 终极放榜 ---
+    # --- E. Final Results ---
     if len(all_preds) == 0:
-        print("❌ 没有成功打分的分子，请检查特征文件。")
+        print("No successful scorings found. Check feature files.")
         return
 
     preds_tensor = torch.tensor(all_preds)
@@ -163,19 +154,19 @@ def main():
     try:
         auc = roc_auc_score(all_labels, all_preds)
     except ValueError:
-        auc = 0.0 # 防御性编程：防止全 0 或全 1 时 sklearn 报错
+        auc = 0.0 # Prevent sklearn error if all labels are 0 or 1
 
     print("\n" + "★"*50)
-    print("🏆 DUD-E 经典评测成绩单 🏆")
+    print("🏆 DUD-E Evaluation Results 🏆")
     print("★"*50)
-    print(f"🎯 测试靶点     : {TARGET}")
-    print(f"🧪 总测试分子数 : {len(labels_tensor)}")
-    print(f"✅ 真实活性分子 : {int(labels_tensor.sum().item())}")
-    print(f"❌ 欺骗性非活性 : {len(labels_tensor) - int(labels_tensor.sum().item())}")
+    print(f"Target        : {TARGET}")
+    print(f"Total testing : {len(labels_tensor)}")
+    print(f"Actives       : {int(labels_tensor.sum().item())}")
+    print(f"Decoys        : {len(labels_tensor) - int(labels_tensor.sum().item())}")
     print("-" * 50)
-    print(f"🚀 Enrichment Factor 1% (EF1%) : {ef1:.3f}  <-- 见证奇迹的时刻！")
-    print(f"📈 Enrichment Factor 5% (EF5%) : {ef5:.3f}")
-    print(f"📊 ROC-AUC 得分                : {auc:.4f}")
+    print(f"Enrichment Factor 1% (EF1%) : {ef1:.3f}")
+    print(f"Enrichment Factor 5% (EF5%) : {ef5:.3f}")
+    print(f"ROC-AUC                     : {auc:.4f}")
     print("★"*50)
 
 if __name__ == "__main__":

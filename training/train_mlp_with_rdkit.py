@@ -9,7 +9,6 @@ import numpy as np
 from tqdm import tqdm
 import lmdb 
 from rdkit import Chem
-# 替换为现代版本的指纹生成器
 from rdkit.Chem import rdFingerprintGenerator
 
 def compute_ef(preds, labels, top_ratio=0.01, active_ratio=0.05):
@@ -57,21 +56,17 @@ def extract_names_and_smiles_from_lmdb(lmdb_path):
     env.close()
     return names, smiles_list
 
-# ==========================================
-# 核心：使用新版 API 将 SMILES 转换为 2048 位 Morgan 指纹
-# ==========================================
+# Convert SMILES to 2048d Morgan FP
 def smiles_to_morgan(smiles_list):
     print(f"Calculating Morgan Fingerprints for {len(smiles_list)} molecules...")
     fps = []
     
-    # 提前初始化好新版生成器
     mfpgen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
     
     for smi in tqdm(smiles_list, desc="Morgan FP"):
         try:
             mol = Chem.MolFromSmiles(smi)
             if mol:
-                # 直接获取 NumPy 数组，避免过时警告
                 fp = mfpgen.GetFingerprintAsNumPy(mol)
                 fps.append(fp.astype(np.float32))
             else:
@@ -93,12 +88,13 @@ class FusionDataset(Dataset):
         
         if len(m_names) != m_reps.shape[0]: raise ValueError("Mismatch!")
         
-        # 将 3D 特征存入字典
+        # Store 3D features
         self.mol_dict_3d = {str(name): np.mean(rep, axis=0) for name, rep in zip(m_names, m_reps)}
         
         print("[3/4] Calculating 2D Morgan Fingerprints...")
         m_fps = smiles_to_morgan(m_smiles)
-        # 将 2D 指纹存入字典
+        
+        # Store 2D features
         self.mol_dict_2d = {str(name): fp for name, fp in zip(m_names, m_fps)}
         
         print("[4/4] Aligning Pairs...")
@@ -113,12 +109,12 @@ class FusionDataset(Dataset):
                             self.data_pairs.append({
                                 'p_feat': self.pocket_dict[p_path],
                                 'm_feat_3d': self.mol_dict_3d[m_path],
-                                'm_feat_2d': self.mol_dict_2d[m_path], # 新增 2D 特征
+                                'm_feat_2d': self.mol_dict_2d[m_path],
                                 'label': float(affinity_str)
                             })
                         except ValueError: continue
                         
-        print(f"🔥 Fusion Dataset Built: {len(self.data_pairs)} valid pairs.\n")
+        print(f"Fusion Dataset Built: {len(self.data_pairs)} valid pairs.\n")
 
     def __len__(self): return len(self.data_pairs)
 
@@ -131,16 +127,13 @@ class FusionDataset(Dataset):
             torch.tensor(item['label'], dtype=torch.float32)
         )
 
-# ==========================================
-# 融合版 MLP 模型：接收 3D 和 2D 特征
-# ==========================================
+# Fusion MLP: Accepts 3D and 2D features
 class FusionRegressor(nn.Module):
     def __init__(self, embed_dim=512, fp_dim=2048, dropout=0.3):
         super().__init__()
-        # 3D 融合维度 (512 * 4 = 2048) + 2D 指纹维度 (2048) = 4096
+        # 3D dims (2048) + 2D dims (2048) = 4096
         in_dim = (embed_dim * 4) + fp_dim
         
-        # 因为输入变大了，第一层加宽一点
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, 2048), nn.BatchNorm1d(2048), nn.GELU(), nn.Dropout(dropout),
             nn.Linear(2048, 512), nn.BatchNorm1d(512), nn.GELU(), nn.Dropout(dropout),
@@ -149,12 +142,12 @@ class FusionRegressor(nn.Module):
         )
 
     def forward(self, p_embed, m_embed_3d, m_embed_2d):
-        # 1. 构建 3D 交叉特征
+        # 1. Build 3D cross features
         product_feat = p_embed * m_embed_3d
         diff_feat = torch.abs(p_embed - m_embed_3d)
         feat_3d = torch.cat([p_embed, m_embed_3d, product_feat, diff_feat], dim=-1)
         
-        # 2. 暴力拼接 2D 化学指纹
+        # 2. Concatenate 2D fingerprints
         x = torch.cat([feat_3d, m_embed_2d], dim=-1)
         
         return self.mlp(x).squeeze(-1)
@@ -186,7 +179,7 @@ def main():
     scaler = GradScaler()
 
     best_ef1 = 0.0
-    print(f"\n🚀 Ultimate Fusion (3D+2D) MLP Started! (Batch Size: {BATCH_SIZE})")
+    print(f"\nUltimate Fusion (3D+2D) MLP Started! (Batch Size: {BATCH_SIZE})")
     
     for epoch in range(epochs):
         model.train()
@@ -233,7 +226,7 @@ def main():
         if val_ef1 > best_ef1:
             best_ef1 = val_ef1
             torch.save(model.state_dict(), SAVE_MODEL_PATH)
-            print(f"Epoch [{epoch+1:03d}/{epochs}] - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f} | 🏆 NEW BEST Val EF1%: {best_ef1:.2f}%")
+            print(f"Epoch [{epoch+1:03d}/{epochs}] - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f} | NEW BEST Val EF1%: {best_ef1:.2f}%")
         elif (epoch + 1) % 10 == 0:
             print(f"Epoch [{epoch+1:03d}/{epochs}] - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f} | Val EF1%: {val_ef1:.2f}%")
 

@@ -1,9 +1,4 @@
 #!/usr/bin/env python3 -u
-# Copyright (c) DP Techonology, Inc. and its affiliates.
-#
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
-
 import logging
 import os
 import sys
@@ -16,7 +11,7 @@ import warnings
 import shutil
 import uuid
 
-# ================= 强行劫持：优先加载 THU-ATOM 的魔改版 Uni-Mol =================
+# Force load modified Uni-Mol from THU-ATOM
 sys.path.insert(0, "/root/unimol/Drug-The-Whole-Genome")
 
 import unimol
@@ -32,8 +27,6 @@ from unicore import tasks
 from Bio.PDB import PDBParser
 from Bio.PDB.StructureBuilder import PDBConstructionWarning
 
-# ==============================================================================
-
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -47,9 +40,8 @@ warnings.filterwarnings(
     category=PDBConstructionWarning
 )
 
-
 def write_lmdb(data, lmdb_path, start_idx=0):
-    """AutoDL 专用安全写入方案 (SSD 缓存加速)"""
+    """Safe writing strategy with local SSD caching."""
     for suffix in ['', '-lock']:
         p = lmdb_path + suffix
         if os.path.exists(p):
@@ -96,11 +88,8 @@ def write_lmdb(data, lmdb_path, start_idx=0):
             os.remove(p)
     return num
 
-
 def get_unique_pocket_files(label_path):
-    """
-    极速去重：提取第一列的绝对路径。
-    """
+    """Extract absolute paths from the first column to remove duplicates."""
     unique_pockets = set()
     if not os.path.exists(label_path):
         logger.error(f"Label file not found: {label_path}")
@@ -110,16 +99,14 @@ def get_unique_pocket_files(label_path):
         for line in f:
             parts = line.strip().split()
             if len(parts) >= 1:
-                # 第一列直接就是绝对路径
                 pocket_file = parts[0]
                 unique_pockets.add(pocket_file)
 
-    logger.info(f"Scanned label file. Found {len(unique_pockets)} UNIQUE absolute pocket paths.")
+    logger.info(f"Found {len(unique_pockets)} UNIQUE absolute pocket paths.")
     return unique_pockets
 
-
 def process_one_pdbdir(pocket_base_dir, out_dir, label_path, name='pocket'):
-    """统一解析逻辑：直接读取绝对路径"""
+    """Parse using absolute paths."""
     lmdb_out_path = os.path.join(out_dir, f'{name}.lmdb')
 
     if os.path.exists(lmdb_out_path):
@@ -133,19 +120,13 @@ def process_one_pdbdir(pocket_base_dir, out_dir, label_path, name='pocket'):
     all_pocket = []
     p_parser = PDBParser(QUIET=True)
 
-    for pocket_file in tqdm(unique_pocket_files, desc="Parsing Unique Pockets"):
-        # pocket_file 已经是绝对路径了，无需拼接
+    for pocket_file in tqdm(unique_pocket_files, desc="Parsing Pockets"):
         if not os.path.exists(pocket_file):
-            logger.warning(f"Pocket file not found on disk: {pocket_file}")
+            logger.warning(f"Pocket file not found: {pocket_file}")
             continue
 
-        # ==============================================================
-        # 核心修改：直接用完整绝对路径作为特征的 ID (Key)！
-        # 这样训练时读到 label.txt 第一列时，能一字不差地精准命中这个特征
-        # ==============================================================
+        # Core: Use the full absolute path as the feature ID
         pocket_id = pocket_file 
-        
-        # 给 PDBParser 用的一个简短名字（防止内部报错，不影响外部）
         short_id = os.path.basename(pocket_file).split('.')[0]
 
         try:
@@ -163,7 +144,7 @@ def process_one_pdbdir(pocket_base_dir, out_dir, label_path, name='pocket'):
 
             if len(pocket_atom_type) > 0:
                 all_pocket.append({
-                    'pocket': pocket_id, # 保存时带入完整的绝对路径
+                    'pocket': pocket_id, 
                     'pocket_atoms': pocket_atom_type,
                     'pocket_coordinates': pocket_coord,
                     'affinity': 0.0
@@ -182,7 +163,6 @@ def process_one_pdbdir(pocket_base_dir, out_dir, label_path, name='pocket'):
     write_lmdb(all_pocket, lmdb_out_path, 0)
     return 0
 
-
 def main(args):
     use_fp16 = args.fp16
     use_cuda = torch.cuda.is_available() and not args.cpu
@@ -199,7 +179,7 @@ def main(args):
 
     import torch.nn as nn
     model.pocket_project = nn.Identity()
-    logger.info("Successfully bypassed `pocket_project` using `nn.Identity()`. Will output 512d features.")
+    logger.info("Bypassed `pocket_project` using `nn.Identity()`. Outputting 512d features.")
 
     if use_fp16:
         model.half()
@@ -220,22 +200,20 @@ def main(args):
 
     pocket_reps, pocket_names = task.encode_pockets_multi_folds(model, args.pocket_dir, lmdb_path)
 
-    # 保存 512 维特征
+    # Save 512d features
     with open(os.path.join(out_dir, "pocket_reps_512d.pkl"), "wb") as f:
         pickle.dump((pocket_names, pocket_reps), f)
     logger.info(f"Successfully saved 512d features to {os.path.join(out_dir, 'pocket_reps_512d.pkl')}")
 
 def cli_main():
     parser = options.get_validation_parser()
-    parser.add_argument("--pocket-dir", type=str, default="", help="path for pocket dir (not strictly used if absolute paths provided)")
-    parser.add_argument("--label-file", type=str, required=True,
-                        help="path to the txt file containing absolute pocket paths in the first column")
+    parser.add_argument("--pocket-dir", type=str, default="", help="path for pocket dir")
+    parser.add_argument("--label-file", type=str, required=True, help="path to the txt file containing absolute pocket paths")
 
     options.add_model_args(parser)
     args = options.parse_args_and_arch(parser)
 
     distributed_utils.call_main(args, main)
-
 
 if __name__ == "__main__":
     cli_main()
